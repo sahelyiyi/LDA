@@ -1,0 +1,7 @@
+.idea/*
+__pycache__/*
+
+papers.csv
+
+results/*
+!results/PLACEHOLDER
