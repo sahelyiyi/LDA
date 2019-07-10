@@ -5,3 +5,5 @@ papers.csv
 
 results/*
 !results/PLACEHOLDER
+!results/LDA/PLACEHOLDER
+!results/RTM/PLACEHOLDER
