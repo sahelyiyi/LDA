@@ -12,7 +12,7 @@ def _clean_data(papers):
     papers['paper_text_processed'] = papers['paper_text_processed'].map(lambda x: x.lower())
 
 
-def loading_data():
+def load_data():
     # Read data into papers
     papers = pd.read_csv('papers.csv')
 

@@ -1,5 +1,6 @@
 from __future__ import print_function
 from math import *
+import json
 import time
 
 import numpy as np
@@ -165,6 +166,13 @@ class RTM:
         np.savetxt(RTM_RESULTS_FILE_PATH + '/gamma.txt', self.gamma, delimiter='\t')
         with open(RTM_RESULTS_FILE_PATH + '/v.txt', 'w') as f:
             f.write('%f\n' % self.v)
+
+    def load_model(self):
+        self.eta = np.loadtxt(RTM_RESULTS_FILE_PATH + '/eta.txt', delimiter='\t')
+        self.beta = np.loadtxt(RTM_RESULTS_FILE_PATH + '/beta.txt', delimiter='\t')
+        self.gamma = np.loadtxt(RTM_RESULTS_FILE_PATH + '/gamma.txt', delimiter='\t')
+        with open(RTM_RESULTS_FILE_PATH + '/v.txt', 'r') as f:
+            self.v = json.load(f)
 
 
 def print_rtm_topics(model, words, number_topics, number_words):

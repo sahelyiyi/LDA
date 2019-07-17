@@ -2,6 +2,7 @@
 __pycache__/*
 
 papers.csv
+obs.csv
 
 results/*
 !results/PLACEHOLDER

@@ -4,7 +4,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation as LDA
 import numpy as np
 
-from data import loading_data
+from data.papers_data import load_data
 from models.lda import print_lda_topics, lda_topics_visualization
 from models.rtm import RTM, print_rtm_topics
 from settings import NUMBER_TOPICS, NUMBER_WORDS, RTM_MAX_ITER
@@ -49,7 +49,7 @@ def run_RTM(vocab, paper_words_count_matrix, max_iter=RTM_MAX_ITER, number_topic
 
 def run(method_name='LDA'):
     # Load papers data
-    papers = loading_data()
+    papers = load_data()
     print ('Data has loaded.')
 
     # Initialise the count vectorizer with the English stop words
