@@ -4,12 +4,11 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import networkx as nx
+import tensorflow as tf
 import re
 import argparse
 import math
-import scipy.optimize
 
-from lad import lad
 from sklearn.neighbors import NearestNeighbors
 
 
@@ -20,11 +19,11 @@ def create_links(X_train, n_neighbors):
 
 
 def block_clipping(weights_in, feature_dim, nr_edges, _lambda):
-    mtx = weights_in.reshape(feature_dim, nr_edges)
+    mtx = np.reshape(weights_in, (feature_dim, nr_edges), order="F")
 
     x_norm = np.sqrt(sum(np.power(mtx, 2)))
 
-    idx_exceed = np.where(x_norm < _lambda)[0]
+    idx_exceed = np.where(x_norm > _lambda)[0]
     factor = np.ones(nr_edges)
 
     for iter_idx in range(len(idx_exceed)):
@@ -32,62 +31,58 @@ def block_clipping(weights_in, feature_dim, nr_edges, _lambda):
         factor[idx] = np.divide(_lambda, x_norm[idx])
 
     weights_out = np.dot(mtx, np.diag(factor))
-    weights_out = weights_out.ravel()
+    weights_out = np.reshape(weights_out, (feature_dim*nr_edges), order="F")
 
     return weights_out
 
 
 def update_x_linreg(weights_in, sampling_set, feature_dim, nr_nodes, mtx_A, vec_B):
     tmp = np.dot(mtx_A, weights_in) + vec_B
-    tmp = tmp.reshape(feature_dim, nr_nodes)
+    tmp = np.reshape(tmp, (feature_dim, nr_nodes), order="F")
 
-    weights_out = weights_in.reshape(feature_dim, nr_nodes)
+    weights_out = np.reshape(weights_in, (feature_dim, nr_nodes), order="F")
     weights_out[:, sampling_set] = tmp[:, sampling_set]
-    weights_out = weights_out.reshape(feature_dim * nr_nodes)
+    weights_out = np.reshape(weights_out, (feature_dim * nr_nodes), order="F")
 
     return weights_out
 
 
-def lad(X, y, yerr=None, l1_regularizer=0.5, maxiter=50, rtol=1e-4,
+def lad(X, y, yerr=None, l1_regularizer=0., maxiter=50, rtol=1e-4,
         eps=1e-4, session=None):
     """
     Linear least absolute deviations with L1 norm regularization using
-    Majorization-Minimization. See [1]_ for a similar mathematical derivation.
-
+    Majorization-Minimization. See [1] for a similar mathematical derivation.
     Parameters
     ----------
     X : (n, m)-matrix
-        Design matrix
+        Design matrix.
     y : (n, 1) matrix
-        Vector of observations
+        Vector of observations.
     yerr : (n, 1) matrix
-        Vector of standard deviations on the observations
+        Vector of standard deviations on the observations.
     l1_regularizer : float
         Factor to control the importance of the L1 regularization.
-        Note: due to a limitation of tensorflow.matrix_solve_ls,
-        do not set this value to zero
     maxiter : int
         Maximum number of iterations of the majorization-minimization algorithm.
         If maxiter equals zero, then this function returns the Weighted
-        Least-Squares coefficients
+        Least-Squares coefficients.
     rtol : float
-        Relative tolerance used as an early stopping criterion
+        Relative tolerance on the coefficients used as an early stopping
+        criterion. If |x_{k+1} - x_{k}|/max(1, |x_{k}|) < rtol,
+        where |x| is the L1-norm of x, the algorithm stops.
     eps : float
-        Inscrease this value if tensorflow raises an exception
-        saying that the Cholesky decomposition was not successful
+        Increase this value if tensorflow raises an exception
+        saying that the Cholesky decomposition was not successful.
     session : tf.Session object
-        A tensorflow.Session object
-
+        A tensorflow.Session object.
     Returns
     -------
     x : (m, 1) matrix
         Vector of coefficients that minimizes the least absolute deviations
         with L1 regularization.
-
     References
     ----------
-    [1] Phillips, R. F. Least absolute deviations estimation via the EM
-        algorithm. Statistics and Computing, 12, 281-285, 2002.
+    [1] Phillips, R. F. Least absolute deviations estimation via the EM algorithm. Statistics and Computing, 12, 281-285, 2002.
     """
 
     if yerr is not None:
@@ -100,6 +95,7 @@ def lad(X, y, yerr=None, l1_regularizer=0.5, maxiter=50, rtol=1e-4,
     y_tensor = tf.reshape(tf.convert_to_tensor(y / whitening_factor,
                                                dtype=tf.float64), (-1, 1))
     eps = tf.convert_to_tensor(eps, dtype=tf.float64)
+    one = tf.constant(1., dtype=tf.float64)
 
     with session or tf.Session() as session:
         # solves the L2 norm with L2 regularization problem
@@ -108,16 +104,14 @@ def lad(X, y, yerr=None, l1_regularizer=0.5, maxiter=50, rtol=1e-4,
         n = 0
         while n < maxiter:
             reg_factor = tf.norm(x, ord=1)
-            l1_factor = tf.maximum(eps, tf.sqrt(tf.abs(y_tensor - tf.matmul(X_tensor, x))))
-
-            X_tensor = X_tensor / l1_factor
-            y_tensor = y_tensor / l1_factor
-
-            # Solves the reweighted least squares problem with L2 regularization
-            xo = tf.matrix_solve_ls(X_tensor, y_tensor,
+            l1_factor = tf.maximum(eps,
+                                   tf.sqrt(tf.abs(y_tensor - tf.matmul(X_tensor, x))))
+            # solve the reweighted least squares problem with L2 regularization
+            xo = tf.matrix_solve_ls(X_tensor/l1_factor, y_tensor/l1_factor,
                                     l2_regularizer=l1_regularizer/reg_factor)
-
-            rel_err = tf.norm(x - xo, ord=1) / tf.maximum(tf.constant(1., dtype=tf.float64), reg_factor)
+            # compute stopping criterion
+            rel_err = tf.norm(x - xo, ord=1) / tf.maximum(one, reg_factor)
+            # update
             x = xo
             if session.run(rel_err) < rtol:
                 break
@@ -134,12 +128,18 @@ def nLasso():
     stat_lat, stat_lon = df['# lat'].values, df['lon'].values
 
     cluster_1 = [38, 36, 33, 22, 23, 28, 20, 18, 15, 13, 12, 17, 7, 9, 5, 2, 3]
+    cluster_1 = [x-1 for x in cluster_1]
     cluster_2 = [1, 4, 16, 6, 8, 10, 19, 26, 27, 29, 30, 32, 35, 37, 44, 45, 51, 50, 47]
+    cluster_2 = [x-1 for x in cluster_2]
     cluster_3 = [23, 18, 22, 15, 12, 13, 9, 7, 5]
+    cluster_3 = [x-1 for x in cluster_3]
     cluster_4 = [23, 18, 22, 15, 12, 13, 9, 7, 5, 28, 20, 17, 2, 3]
+    cluster_4 = [x-1 for x in cluster_4]
 
     FMI_stations = [(stat_lat[i], stat_lon[i]) for i in range(len(stat_lat))]
-    nr_stations = len(stat_lat)
+    FMI_stations = sorted(FMI_stations, key=lambda tup: tup[0])
+    FMI_stations = np.array(FMI_stations)
+    nr_stations = len(FMI_stations)
     N = nr_stations
 
     # here we create the links between neighboring FMI stations
@@ -158,13 +158,11 @@ def nLasso():
     A[A > 0.1] = 1
     A = A - np.eye(A.shape[0])
 
-    # G = graph(A,'upper');
-
-    # indicate FMI weather stations by circles
-    # geoplot(FMI_stations(:,1),FMI_stations(:,2),'o','MarkerSize',10,'LineWidth',2);
-    # indicate Helsinki with red cross
+    # # indicate FMI weather stations by circles
+    # geoplot(FMI_stations[:,0],FMI_stations[:,1],'o','MarkerSize',10,'LineWidth',2)
+    # # indicate Helsinki with red cross
     # geoplot(60.192,24.9458,'rx','MarkerSize',20,'LineWidth',5);
-
+    #
     # measurements = zeros(1,nr_stations);
     # for iter_station=1:nr_stations:
     #    label = sprintf('%3d',iter_station) ;
@@ -174,7 +172,6 @@ def nLasso():
     d = 3
 
     X_mtx = np.zeros((d, N))
-    # true_y = np.zeros((1, N))
     true_y = np.zeros(N)
 
     for iter_station in range(nr_stations):
@@ -183,6 +180,7 @@ def nLasso():
                     obs['lon'] - FMI_stations[iter_station][1]) ** 2 < 0.0001]
         dmy = near_stations['Air temperature (t2m)']
         indices = dmy.dropna()
+        indices = indices.sample(frac=1).reset_index(drop=True)
 
         blocklen = math.floor(len(indices) / (d + 1))
 
@@ -205,7 +203,7 @@ def nLasso():
     mask_mtx = np.kron(np.eye(nr_nodes), np.ones((feature_dim, feature_dim)))
     feature_norm_squared_vec = np.sum(np.power(feature_mtx, 2), axis=0)
     norm_features_2 = np.kron(np.diag(feature_norm_squared_vec), np.eye(feature_dim))
-    feature_mtx_vec = np.reshape(feature_mtx, nr_nodes * feature_dim, 1)
+    feature_mtx_vec = np.reshape(feature_mtx, (nr_nodes * feature_dim, 1), order="F")
     proj_feature = np.dot(np.multiply(np.outer(feature_mtx_vec.ravel(), feature_mtx_vec.ravel()), mask_mtx), np.linalg.inv(
         norm_features_2))
 
@@ -258,7 +256,7 @@ def nLasso():
     for iter_runs in range(RUNS):
         dmy_idx = np.ones(N)
         dmy_idx[cluster_3] = 0
-        dmy_idx[[12, 13, 15]] = 1
+        dmy_idx[[11, 12, 14]] = 1
         samplingset = np.where(dmy_idx > 0.2)[0]
         unlabeled = np.where(dmy_idx < 0.2)[0]
 
@@ -296,7 +294,9 @@ def nLasso():
         # mtx_B = diag(ones(dmy, 1). / (ones(dmy, 1) + tilde_tau));
 
         # TODO fix true_y
-        vec_B = np.dot(mtx_B_block, np.dot(X_mtx, np.diag(true_y)).reshape(N * d))
+        _mtx = np.dot(X_mtx, np.diag(true_y))
+        _mtx = np.reshape(_mtx, (N * d, 1), order="F")
+        vec_B = np.dot(mtx_B_block, _mtx).ravel()
 
         for iterk in range(1000):
             # LP iteration
@@ -335,7 +335,7 @@ def nLasso():
         # title('dual SLP')
         # figure(2);
 
-        w_hat = running_average.reshape(d, N)
+        w_hat = np.reshape(running_average, (d, N), order="F")
 
         # norm_w_hat=sum(np.power(w_hat, 2),1);
 
@@ -346,14 +346,14 @@ def nLasso():
                                                                                                        2) ** 2
 
     # figure(3);
-    mtx = np.transpose(running_average.reshape(d, N))
+    mtx = np.transpose(np.reshape(running_average, (d, N), order="F"))
     # stem(mtx(unlabeled,:));
     A_mtx = feature_mtx[:, unlabeled]
     A_mtx = np.transpose(A_mtx)
     y = true_y[unlabeled]
     y = np.transpose(y)
     x = lad(A_mtx, y)
-    np.linalg.norm(np.dot(A_mtx, x) - y, 2) ** 2 / np.linalg.norm(y, 2) ** 2
+    return np.linalg.norm(np.dot(A_mtx, x).ravel() - y, 2) ** 2 / np.linalg.norm(y, 2) ** 2
 
     # T = array2table(mtx,'VariableNames',{'a','b'});
     # filename = sprintf('MSE_FMI_%s.csv',date) ;

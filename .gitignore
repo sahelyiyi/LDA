@@ -1,3 +1,4 @@
+.DS_Store
 .idea/*
 __pycache__/*
 
@@ -8,3 +9,6 @@ results/*
 !results/PLACEHOLDER
 !results/LDA/PLACEHOLDER
 !results/RTM/PLACEHOLDER
+
+data/__pycache__/*
+models/__pycache__/*
