@@ -84,8 +84,45 @@ def lad(X, y, yerr=None, l1_regularizer=0., maxiter=50, rtol=1e-4,
     return res
 
 
+def create_A(FMI_stations, nr_stations):
+    # here we create the links between neighboring FMI stations
+    K_nn = 3
+    Idx = create_links(FMI_stations, K_nn + 1)
+
+    A = np.zeros((nr_stations, nr_stations))
+    for iter_obs in range(nr_stations):
+        A[iter_obs, Idx[iter_obs]] = 1
+
+    A = A + np.transpose(A)
+    A[A > 0.1] = 1
+    A = A - np.eye(A.shape[0])
+    return A
+
+
+def create_features_and_y(obs, FMI_stations, d, nr_stations):
+    X_mtx = np.zeros((d, nr_stations))
+    true_y = np.zeros(nr_stations)
+
+    for iter_station in range(nr_stations):
+        # finding near stations
+        near_stations = obs.loc[(obs['# lat'] - FMI_stations[iter_station][0]) ** 2 + (
+                obs['lon'] - FMI_stations[iter_station][1]) ** 2 < 0.0001]
+        dmy = near_stations['Air temperature (t2m)']
+        indices = dmy.dropna()
+        indices = indices.sample(frac=1).reset_index(drop=True)
+
+        blocklen = math.floor(len(indices) / (d + 1))
+
+        for iter_dim in range(d):
+            X_mtx[iter_dim, iter_station] = sum(
+                indices[(iter_dim * blocklen):(blocklen * (iter_dim + 1))].values) / blocklen
+        true_y[iter_station] = sum(indices[(d * blocklen):(blocklen * (d + 1))].values) / blocklen
+
+    return X_mtx, true_y
+
+
 def nLasso():
-    obs = pd.read_csv('../obs.csv', sep=';', delimiter=None, header='infer')
+    obs = pd.read_csv('obs.csv', sep=';', delimiter=None, header='infer')
     obs = obs.dropna(subset=['Air temperature (t2m)', '# lat', 'lon'])
     df = obs.drop_duplicates('# lat')
     stat_lat, stat_lon = df['# lat'].values, df['lon'].values
@@ -99,53 +136,24 @@ def nLasso():
     FMI_stations = sorted(FMI_stations, key=lambda tup: tup[0])
     FMI_stations = np.array(FMI_stations)
     nr_stations = len(FMI_stations)
-    N = nr_stations
 
-    # here we create the links between neighboring FMI stations
-    K_nn = 3
-    Idx = create_links(FMI_stations, K_nn + 1)
+    A = create_A(FMI_stations, nr_stations)
 
-    A = np.zeros((nr_stations, nr_stations))
-    for iter_obs in range(nr_stations):
-        A[iter_obs, Idx[iter_obs]] = 1
-
-    A = A + np.transpose(A)
-    A[A > 0.1] = 1
-    A = A - np.eye(A.shape[0])
-
-    # number of features at each data point
-    d = 3
-
-    X_mtx = np.zeros((d, N))
-    true_y = np.zeros(N)
-
-    for iter_station in range(nr_stations):
-        # finding near stations
-        near_stations = obs.loc[(obs['# lat'] - FMI_stations[iter_station][0]) ** 2 + (
-                    obs['lon'] - FMI_stations[iter_station][1]) ** 2 < 0.0001]
-        dmy = near_stations['Air temperature (t2m)']
-        indices = dmy.dropna()
-        indices = indices.sample(frac=1).reset_index(drop=True)
-
-        blocklen = math.floor(len(indices) / (d + 1))
-
-        for iter_dim in range(d):
-            X_mtx[iter_dim, iter_station] = sum(
-                indices[(iter_dim * blocklen):(blocklen * (iter_dim + 1))].values) / blocklen
-        true_y[iter_station] = sum(indices[(d * blocklen):(blocklen * (d + 1))].values) / blocklen
+    feature_dim = 3  # number of features at each data point
+    X_mtx, true_y = create_features_and_y(obs, FMI_stations, feature_dim, nr_stations)
 
     # create weighted incidence matrix
     G = nx.DiGraph(np.triu(A, 1))
     D = np.transpose(nx.incidence_matrix(G, oriented=True).toarray())
-    D_block = np.kron(D, np.eye(d))
+    D_block = np.kron(D, np.eye(feature_dim))
 
-    [nr_edges, N] = D.shape
+    nr_edges = D.shape[0]
 
     Lambda = np.diag((1. / (np.sum(abs(D), 1))))
-    Lambda_block = np.kron(Lambda, np.eye(d))
+    Lambda_block = np.kron(Lambda, np.eye(feature_dim))
     Gamma_vec = (1. / (sum(abs(D))))
     Gamma = np.diag(Gamma_vec)
-    Gamma_block = np.kron(Gamma, np.eye(d))
+    Gamma_block = np.kron(Gamma, np.eye(feature_dim))
 
     # Algorithm Initialisation
 
@@ -156,49 +164,48 @@ def nLasso():
     RUNS = 1
     MSE = np.zeros(RUNS)
     for iter_runs in range(RUNS):
-        dmy_idx = np.ones(N)
+        dmy_idx = np.ones(nr_stations)
         dmy_idx[cluster_3] = 0
         dmy_idx[[11, 12, 14]] = 1
         samplingset = np.where(dmy_idx > 0.2)[0]
         unlabeled = np.where(dmy_idx < 0.2)[0]
 
-        hatx = np.zeros(N * d)
-        running_average = np.zeros(N * d)
-        haty = np.zeros(nr_edges * d)
+        mtx_A_block = np.zeros((nr_stations * feature_dim, nr_stations * feature_dim))
+        mtx_B_block = np.zeros((nr_stations * feature_dim, nr_stations * feature_dim))
 
-        mtx_A_block = np.zeros((N * d, N * d))
-        mtx_B_block = np.zeros((N * d, N * d))
-
-        for iter_node in range(N):
-            msk_dmy = np.zeros((N, N))
+        for iter_node in range(nr_stations):
+            msk_dmy = np.zeros((nr_stations, nr_stations))
             msk_dmy[iter_node, iter_node] = 1
             tilde_tau = len(samplingset) / (2 * Gamma_vec[iter_node])
 
             iter_node_vec = X_mtx[:, iter_node]
-            mtx_B = np.linalg.inv(np.outer(iter_node_vec.ravel(), iter_node_vec.ravel()) + tilde_tau * np.eye(d))
-
-            mtx_A = np.dot(tilde_tau * np.eye(d), mtx_B)
+            mtx_B = np.linalg.inv(np.outer(iter_node_vec.ravel(), iter_node_vec.ravel()) + tilde_tau * np.eye(feature_dim))
+            mtx_A = np.dot(tilde_tau * np.eye(feature_dim), mtx_B)
 
             mtx_A_block = mtx_A_block + np.kron(msk_dmy, mtx_A)
             mtx_B_block = mtx_B_block + np.kron(msk_dmy, mtx_B)
 
         # TODO fix true_y
         _mtx = np.dot(X_mtx, np.diag(true_y))
-        _mtx = np.reshape(_mtx, (N * d, 1), order="F")
+        _mtx = np.reshape(_mtx, (nr_stations * feature_dim, 1), order="F")
         vec_B = np.dot(mtx_B_block, _mtx).ravel()
+
+        hatx = np.zeros(nr_stations * feature_dim)
+        haty = np.zeros(nr_edges * feature_dim)
+        running_average = np.zeros(nr_stations * feature_dim)
 
         for iterk in range(1000):
 
             newx = hatx - 0.5 * Gamma_block.dot(np.transpose(D_block).dot(haty))
-            newx = update_x_linreg(newx, samplingset, d, N, mtx_A_block, vec_B)
+            newx = update_x_linreg(newx, samplingset, feature_dim, nr_stations, mtx_A_block, vec_B)
 
             tildex = 2 * newx - hatx
             newy = haty + (0.5 * Lambda_block).dot(D_block.dot(tildex))
-            haty = block_clipping(newy, d, nr_edges, _lambda)
+            haty = block_clipping(newy, feature_dim, nr_edges, _lambda)
             hatx = newx
             running_average = (running_average * iterk + hatx) / (iterk + 1)
 
-        w_hat = np.reshape(running_average, (d, N), order="F")
+        w_hat = np.reshape(running_average, (feature_dim, nr_stations), order="F")
         y_hat = sum(np.multiply(X_mtx, w_hat))
 
         MSE[iter_runs] = np.linalg.norm(y_hat[unlabeled] - true_y[unlabeled], 2) ** 2 / np.linalg.norm(true_y[unlabeled],
