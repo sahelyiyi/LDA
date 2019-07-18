@@ -85,8 +85,7 @@ def lad(X, y, yerr=None, l1_regularizer=0., maxiter=50, rtol=1e-4,
 
 
 def nLasso():
-    # TODO fix path ../obs.csv
-    obs = pd.read_csv('obs.csv', sep=';', delimiter=None, header='infer')
+    obs = pd.read_csv('../obs.csv', sep=';', delimiter=None, header='infer')
     obs = obs.dropna(subset=['Air temperature (t2m)', '# lat', 'lon'])
     df = obs.drop_duplicates('# lat')
     stat_lat, stat_lon = df['# lat'].values, df['lon'].values
